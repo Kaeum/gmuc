@@ -1,0 +1,6 @@
+build
+dist
+GMUC.spec
+.venv
+.idea
+.DS_Store
