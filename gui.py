@@ -39,18 +39,6 @@ class LogBridge(QObject):
         self.logSignal.emit(text)
 
 
-TIME_SLOTS = [
-    ("06:00", "08:00"),
-    ("08:00", "10:00"),
-    ("10:00", "12:00"),
-    ("12:00", "14:00"),
-    ("14:00", "16:00"),
-    ("16:00", "18:00"),
-    ("18:00", "20:00"),
-    ("20:00", "22:00"),
-]
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -96,8 +84,6 @@ class MainWindow(QMainWindow):
 
         formRow1.addWidget(QLabel("시간(2시간 블록)"))
         self.timeCombo = QComboBox()
-        for fr, to in TIME_SLOTS:
-            self.timeCombo.addItem(f"{fr} - {to}", (fr, to))
         formRow1.addWidget(self.timeCombo)
 
         formRow1.addWidget(QLabel("코트번호"))
@@ -162,6 +148,10 @@ class MainWindow(QMainWindow):
         self.btnStart.clicked.connect(self.onStart)
         self.btnDelete.clicked.connect(self.onDeleteReservation)
         self.logBridge.logSignal.connect(self.appendLog)
+        self.dateEdit.dateChanged.connect(self.onDateChanged)
+
+        # 초기 슬롯 세팅
+        self.refreshTimeSlots()
 
     def appendLog(self, text: str):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -204,7 +194,6 @@ class MainWindow(QMainWindow):
 
         qdate = self.dateEdit.date()
         reservDate = qdate.toString("yyyyMMdd")
-        fromTime, toTime = self.timeCombo.currentData()
         courtNo = int(self.courtSpin.value())
 
         execAt = self.execAtEdit.dateTime().toPython()  # datetime
@@ -218,6 +207,12 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Time Base", "Time Base는 숫자여야 합니다(예: 69). 비워두면 자동 계산됩니다.")
                 return
             timeBaseOverride = int(tb_text)
+
+        slot_data = self.timeCombo.currentData()
+        if slot_data is None:
+            QMessageBox.warning(self, "시간 선택", "선택 가능한 시간 슬롯이 없습니다.")
+            return
+        fromTime, toTime = slot_data
 
         r = self.manager.create_reservation(
             reservDate=reservDate,
@@ -276,22 +271,46 @@ class MainWindow(QMainWindow):
         self.manager.start()
         self.appendLog("스케줄러 가동 시작 (예약들을 실행시각에 맞춰 순차 실행)")
 
+    def onDateChanged(self, qdate: QDate):
+        self.refreshTimeSlots()
+
+    def refreshTimeSlots(self):
+        reserv_date = self.dateEdit.date().toString("yyyyMMdd")
+        try:
+            slots = scheduler.get_time_slots_for_reserv_date(reserv_date)
+        except Exception as e:
+            QMessageBox.warning(self, "시간 슬롯 오류", f"시간 슬롯을 계산하지 못했습니다: {e}")
+            slots = []
+
+        current_data = self.timeCombo.currentData()
+        self.timeCombo.blockSignals(True)
+        self.timeCombo.clear()
+        selected_index = -1
+        for idx, (fr, to) in enumerate(slots):
+            label = f"{fr} - {to}"
+            self.timeCombo.addItem(label, (fr, to))
+            if current_data == (fr, to):
+                selected_index = idx
+        if selected_index >= 0:
+            self.timeCombo.setCurrentIndex(selected_index)
+        self.timeCombo.blockSignals(False)
+
 def main():
     app = QApplication(sys.argv)
 
-    # ----- Access gate: daily HMAC code -----
+    # ----- Access gate: monthly HMAC code -----
     # Use a constant for the secret (no file/env fallback per request)
     secret = APP_SECRET
 
-    today = datetime.now().strftime("%Y%m%d")
-    expected = hmac.new(secret.encode("utf-8"), today.encode("utf-8"), hashlib.sha256).hexdigest()
+    current_period = datetime.now().strftime("%Y%m")
+    expected = hmac.new(secret.encode("utf-8"), current_period.encode("utf-8"), hashlib.sha256).hexdigest()
 
     ok = False
     for _ in range(3):
         code, accepted = QInputDialog.getText(
             None,
             "접속 코드 확인",
-            f"오늘의 코드 입력:",
+            "이번 달의 코드 입력:",
         )
         if not accepted:
             sys.exit(1)

@@ -6,10 +6,8 @@ server (백엔드 역할)
 - 실행 시각이 되면 각 예약에 대해 reserv.py(요청 클라이언트) 실행
   (항상 Reservation의 값을 명시적 인자로 전달)
 - timeCode, courtCode 해석 규칙 적용:
-  * timeCode: 06:00-08:00 기준. Base는 예약일(YYYYMMDD)의 월 기준으로 산출:
-      - 10월일 때 base=69, 이후 한 달 증가할 때마다 +8 (년도 넘김 포함)
-      - 파라미터로 base가 주어지면 해당 값을 우선 사용
-    각 2시간 블록마다 +1 증가
+  * timeCode: 월별 운영 시간표(동절기 07~21, 비동절기 06~22)를 기준으로 첫 슬롯은 base,
+    이후 2시간 블록마다 +1 증가. base는 10월=69에서 시작해 각 월의 슬롯 수만큼 누적.
   * courtCode: 코트번호 N -> TC + N을 3자리 0패딩 (예: 1 -> TC001)
 """
 import os
@@ -22,9 +20,36 @@ import io
 import contextlib
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 # reserv.py는 이제 모듈로 import 하여 직접 호출합니다.
+
+
+WINTER_MONTHS = {11, 12, 1, 2}
+
+
+def _time_slots_for_month(year: int, month: int) -> List[Tuple[str, str]]:
+    """Return ordered 2-hour slots for given month, accounting for winter schedule."""
+    if month in WINTER_MONTHS:
+        start_hour = 7
+        end_hour = 21  # exclusive upper bound for range
+    else:
+        start_hour = 6
+        end_hour = 22
+    slots: List[Tuple[str, str]] = []
+    for hour in range(start_hour, end_hour, 2):
+        slots.append((f"{hour:02d}:00", f"{hour + 2:02d}:00"))
+    return slots
+
+
+def get_time_slots_for_reserv_date(reserv_date: str) -> List[Tuple[str, str]]:
+    """Expose slots to other modules (GUI) based on 예약일."""
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})$", reserv_date)
+    if not m:
+        raise ValueError(f"reservDate 형식 오류: {reserv_date}")
+    year = int(m.group(1))
+    month = int(m.group(2))
+    return _time_slots_for_month(year, month)
 
 
 @dataclass
@@ -56,8 +81,8 @@ class Reservation:
 def _compute_timecode_base(reserv_date: str, base_override: Optional[int]) -> int:
     """TIME_CODE base 계산
     - override가 있으면 그대로 사용
-    - 없으면 예약일(YYYYMMDD)의 월 기준으로 '해당 사이클의 10월' 대비 경과 개월 * 8을 69에 더함
-      예: 10월→69, 11월→77, 12월→85, 다음 해 1월→93 ...
+    - 없으면 예약일이 속한 사이클(10월 시작) 이후 경과한 각 월의 슬롯 수를 누적하여 base 산출
+      예: 10월→69(8슬롯), 11월→77(+8), 겨울 슬롯이 7개면 다음 base는 +7만큼 증가
     """
     if base_override is not None:
         return int(base_override)
@@ -68,29 +93,36 @@ def _compute_timecode_base(reserv_date: str, base_override: Optional[int]) -> in
     month = int(m.group(2))
     # 기준 10월: 같은 해 10월 또는 이전 해 10월(월이 1~9면 이전 해 10월을 기준)
     base_year = year if month >= 10 else year - 1
-    months_since_oct = (year * 12 + month) - (base_year * 12 + 10)
-    return 69 + 8 * months_since_oct
+    base = 69
+    cur_year = base_year
+    cur_month = 10
+
+    while not (cur_year == year and cur_month == month):
+        slots_in_month = len(_time_slots_for_month(cur_year, cur_month))
+        base += slots_in_month
+        cur_month += 1
+        if cur_month > 12:
+            cur_month = 1
+            cur_year += 1
+    return base
 
 
 def derive_time_code(from_time: str, to_time: str, reserv_date: str, base_override: Optional[int] = None) -> str:
     """
-    2시간 블록: 06:00-08:00가 base 의 첫 슬롯, 이후 2시간마다 +1.
-    base는 _compute_timecode_base에 따름.
+    2시간 블록: 월별 운영 시간에 따라 첫 슬롯이 다르며, 이후 2시간마다 +1.
+    base는 _compute_timecode_base에 따름(슬롯 수 누적 기반).
     """
-    # ex: "06:00"
-    m = re.match(r"^(\d{2}):(\d{2})$", from_time)
-    if not m:
-        raise ValueError(f"fromTime 형식 오류: {from_time}")
-    start_h = int(m.group(1))
-    start_m = int(m.group(2))
-    if start_m != 0:
-        raise ValueError("분 단위는 00만 허용합니다(2시간 블록 가정).")
-
+    slots = get_time_slots_for_reserv_date(reserv_date)
+    slot_map = {start: end for start, end in slots}
+    if from_time not in slot_map:
+        allowed = ", ".join(f"{start}-{end}" for start, end in slots)
+        raise ValueError(f"허용되지 않는 시작 시간: {from_time} (허용 범위: {allowed})")
+    expected_end = slot_map[from_time]
+    if to_time != expected_end:
+        raise ValueError(f"종료 시간이 시작 시간과 맞지 않습니다: {from_time}->{to_time} (기대값 {expected_end})")
+    slot_index = [start for start, _ in slots].index(from_time)
     base = _compute_timecode_base(reserv_date, base_override)
-    if start_h < 6 or start_h > 20 or (start_h - 6) % 2 != 0:
-        # 06~20 사이, 2시간 간격만 허용
-        raise ValueError(f"허용되지 않는 시작 시간: {from_time}")
-    idx = base + ((start_h - 6) // 2)
+    idx = base + slot_index
     return f"TM0{idx}"
 
 
