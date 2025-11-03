@@ -123,7 +123,8 @@ def derive_time_code(from_time: str, to_time: str, reserv_date: str, base_overri
     slot_index = [start for start, _ in slots].index(from_time)
     base = _compute_timecode_base(reserv_date, base_override)
     idx = base + slot_index
-    return f"TM0{idx}"
+    # TM 코드는 3자리 0패딩이 원칙 (예: 61 -> TM061, 100 -> TM100)
+    return f"TM{idx:03d}"
 
 
 def derive_court_code(court_no: int) -> str:
