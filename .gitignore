@@ -4,3 +4,4 @@ GMUC.spec
 .venv
 .idea
 .DS_Store
+*.code-workspace

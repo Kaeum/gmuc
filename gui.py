@@ -97,6 +97,8 @@ class MainWindow(QMainWindow):
         self.timeBaseEdit.setPlaceholderText("예: 69 (비우면 자동)")
         self.timeBaseEdit.setFixedWidth(120)
         formRow1.addWidget(self.timeBaseEdit)
+        self.btnTimeBaseAuto = QPushButton("자동 계산")
+        formRow1.addWidget(self.btnTimeBaseAuto)
 
         vbox.addLayout(formRow1)
 
@@ -147,6 +149,7 @@ class MainWindow(QMainWindow):
         self.btnAdd.clicked.connect(self.onAddReservation)
         self.btnStart.clicked.connect(self.onStart)
         self.btnDelete.clicked.connect(self.onDeleteReservation)
+        self.btnTimeBaseAuto.clicked.connect(self.onAutoCalcTimeBase)
         self.logBridge.logSignal.connect(self.appendLog)
         self.dateEdit.dateChanged.connect(self.onDateChanged)
 
@@ -187,6 +190,20 @@ class MainWindow(QMainWindow):
         self.manager.set_cookie(cookie)
         self.appendLog(f"쿠키 설정 완료: {cookie}")
 
+    def onAutoCalcTimeBase(self):
+        if not self.manager.cookie:
+            QMessageBox.warning(self, "쿠키 필요", "먼저 로그인 후 쿠키를 설정하세요.")
+            return
+        reserv_date = self.dateEdit.date().toString("yyyyMMdd")
+        try:
+            base_value = scheduler.fetch_time_base_from_server(reserv_date, self.manager.cookie)
+        except Exception as e:
+            QMessageBox.warning(self, "Time Base", f"자동 계산에 실패했습니다: {e}")
+            self.appendLog(f"Time Base 자동 계산 실패({reserv_date}): {e}")
+            return
+        self.timeBaseEdit.setText(str(base_value))
+        self.appendLog(f"Time Base 자동 계산 완료({reserv_date}): {base_value}")
+
     def onAddReservation(self):
         if not self.manager.cookie:
             QMessageBox.warning(self, "쿠키 필요", "먼저 로그인 후 쿠키를 설정하세요.")
@@ -214,14 +231,19 @@ class MainWindow(QMainWindow):
             return
         fromTime, toTime = slot_data
 
-        r = self.manager.create_reservation(
-            reservDate=reservDate,
-            fromTime=fromTime,
-            toTime=toTime,
-            courtNo=courtNo,
-            exec_at=execAt,
-            timeBaseOverride=timeBaseOverride,
-        )
+        try:
+            r = self.manager.create_reservation(
+                reservDate=reservDate,
+                fromTime=fromTime,
+                toTime=toTime,
+                courtNo=courtNo,
+                exec_at=execAt,
+                timeBaseOverride=timeBaseOverride,
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "예약 추가 실패", f"예약 정보를 생성하지 못했습니다: {e}")
+            self.appendLog(f"예약 추가 실패: {e}")
+            return
 
         row = self.table.rowCount()
         self.table.insertRow(row)

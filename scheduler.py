@@ -6,8 +6,8 @@ server (백엔드 역할)
 - 실행 시각이 되면 각 예약에 대해 reserv.py(요청 클라이언트) 실행
   (항상 Reservation의 값을 명시적 인자로 전달)
 - timeCode, courtCode 해석 규칙 적용:
-  * timeCode: 월별 운영 시간표(동절기 07~21, 비동절기 06~22)를 기준으로 첫 슬롯은 base,
-    이후 2시간 블록마다 +1 증가. base는 10월=69에서 시작해 각 월의 슬롯 수만큼 누적.
+  * timeCode: 월별 운영 시간표(동절기 07~21, 비동절기 06~22) 슬롯을 따르며,
+    base 값은 tennisReservDayCheck 응답의 timeCurrentInfo 첫 TIME_CODE를 기준으로 계산.
   * courtCode: 코트번호 N -> TC + N을 3자리 0패딩 (예: 1 -> TC001)
 """
 import os
@@ -18,6 +18,7 @@ import queue
 import threading
 import io
 import contextlib
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, List, Optional, Tuple
@@ -26,6 +27,62 @@ from typing import Callable, List, Optional, Tuple
 
 
 WINTER_MONTHS = {11, 12, 1, 2}
+TIME_INFO_PATTERN = re.compile(
+    r"var\s+timeCurrentInfo\s*=\s*([\"'])\s*(.*?)\s*\1",
+    re.IGNORECASE | re.DOTALL,
+)
+TIME_CODE_VALUE_PATTERN = re.compile(
+    r"TIME_CODE\s*[:=]\s*['\"]?\s*([A-Za-z0-9]+)",
+    re.IGNORECASE,
+)
+
+
+def _extract_time_code_from_response(html: str) -> str:
+    match = TIME_INFO_PATTERN.search(html)
+    if not match:
+        raise ValueError("timeCurrentInfo 구문을 찾을 수 없습니다.")
+    payload = match.group(2).strip()
+    if not payload:
+        raise ValueError("timeCurrentInfo 데이터가 비어 있습니다.")
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as e:
+        alt = TIME_CODE_VALUE_PATTERN.search(payload)
+        if alt:
+            return alt.group(1)
+        raise ValueError("timeCurrentInfo JSON 파싱 실패") from e
+    if not isinstance(data, list) or not data:
+        raise ValueError("예약 가능한 시간이 없습니다.")
+    first = data[0]
+    if not isinstance(first, dict):
+        raise ValueError("timeCurrentInfo 형식이 올바르지 않습니다.")
+    time_code = first.get("TIME_CODE") or first.get("time_code")
+    if not time_code:
+        raise ValueError("TIME_CODE 필드를 찾지 못했습니다.")
+    return str(time_code)
+
+
+def fetch_time_base_from_server(reserv_date: str, cookie: str, base_url: Optional[str] = None) -> int:
+    """tennisReservDayCheck 응답에서 첫 TIME_CODE의 숫자 부분을 base로 반환."""
+    if not cookie:
+        raise ValueError("쿠키가 필요합니다.")
+    try:
+        import reserv
+    except Exception as e:
+        raise RuntimeError(f"reserv 모듈 로드 실패: {e}") from e
+
+    base = (base_url or reserv.BASE_DEFAULT).rstrip("/")
+    session = reserv.build_session(base, cookie)
+    html = reserv.post_text(
+        session,
+        f"{base}/user/tennis/tennisReservDayCheck.do",
+        {"reservDate": reserv_date},
+    )
+    time_code = _extract_time_code_from_response(html)
+    m = re.search(r"(\d+)$", time_code)
+    if not m:
+        raise ValueError(f"TIME_CODE 형식이 올바르지 않습니다: {time_code}")
+    return int(m.group(1))
 
 
 def _time_slots_for_month(year: int, month: int) -> List[Tuple[str, str]]:
@@ -78,39 +135,22 @@ class Reservation:
         }
 
 
-def _compute_timecode_base(reserv_date: str, base_override: Optional[int]) -> int:
+def _compute_timecode_base(reserv_date: str, base_override: Optional[int], cookie: Optional[str]) -> int:
     """TIME_CODE base 계산
     - override가 있으면 그대로 사용
-    - 없으면 예약일이 속한 사이클(10월 시작) 이후 경과한 각 월의 슬롯 수를 누적하여 base 산출
-      예: 10월→69(8슬롯), 11월→77(+8), 겨울 슬롯이 7개면 다음 base는 +7만큼 증가
+    - 없으면 tennisReservDayCheck 응답의 첫 TIME_CODE 숫자를 사용
     """
     if base_override is not None:
         return int(base_override)
-    m = re.match(r"^(\d{4})(\d{2})(\d{2})$", reserv_date)
-    if not m:
-        raise ValueError(f"reservDate 형식 오류: {reserv_date}")
-    year = int(m.group(1))
-    month = int(m.group(2))
-    # 기준 10월: 같은 해 10월 또는 이전 해 10월(월이 1~9면 이전 해 10월을 기준)
-    base_year = year if month >= 10 else year - 1
-    base = 69
-    cur_year = base_year
-    cur_month = 10
-
-    while not (cur_year == year and cur_month == month):
-        slots_in_month = len(_time_slots_for_month(cur_year, cur_month))
-        base += slots_in_month
-        cur_month += 1
-        if cur_month > 12:
-            cur_month = 1
-            cur_year += 1
-    return base
+    if not cookie:
+        raise ValueError("Time Base 자동 계산을 위해 쿠키가 필요합니다.")
+    return fetch_time_base_from_server(reserv_date, cookie)
 
 
-def derive_time_code(from_time: str, to_time: str, reserv_date: str, base_override: Optional[int] = None) -> str:
+def derive_time_code(from_time: str, to_time: str, reserv_date: str, time_base: int) -> str:
     """
     2시간 블록: 월별 운영 시간에 따라 첫 슬롯이 다르며, 이후 2시간마다 +1.
-    base는 _compute_timecode_base에 따름(슬롯 수 누적 기반).
+    주어진 time_base는 해당 날짜의 첫 TIME_CODE 숫자 값.
     """
     slots = get_time_slots_for_reserv_date(reserv_date)
     slot_map = {start: end for start, end in slots}
@@ -121,8 +161,7 @@ def derive_time_code(from_time: str, to_time: str, reserv_date: str, base_overri
     if to_time != expected_end:
         raise ValueError(f"종료 시간이 시작 시간과 맞지 않습니다: {from_time}->{to_time} (기대값 {expected_end})")
     slot_index = [start for start, _ in slots].index(from_time)
-    base = _compute_timecode_base(reserv_date, base_override)
-    idx = base + slot_index
+    idx = time_base + slot_index
     # TM 코드는 3자리 0패딩이 원칙 (예: 61 -> TM061, 100 -> TM100)
     return f"TM{idx:03d}"
 
@@ -151,8 +190,8 @@ class ReservationManager:
                            timeBaseOverride: Optional[int] = None) -> Reservation:
         if not self.cookie:
             raise RuntimeError("쿠키가 설정되지 않음. 먼저 set_cookie 호출 필요.")
-        timeCode = derive_time_code(fromTime, toTime, reservDate, timeBaseOverride)
-        timeBase = _compute_timecode_base(reservDate, timeBaseOverride)
+        timeBase = _compute_timecode_base(reservDate, timeBaseOverride, self.cookie)
+        timeCode = derive_time_code(fromTime, toTime, reservDate, timeBase)
         courtCode = derive_court_code(courtNo)
         r = Reservation(
             cookie=self.cookie,
