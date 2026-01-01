@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# One-click Docker setup + build + optional run for GMUC (Ubuntu/Debian)
+# One-click Docker setup + build for GMUC (Ubuntu/Debian)
+# Ensure bash even if invoked via sh
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
 # Usage:
 #   ./scripts/oneclick_docker.sh            # Docker 설치(필요시) + 이미지 빌드
 #   ./scripts/oneclick_docker.sh --install-only   # Docker만 설치
