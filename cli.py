@@ -22,6 +22,9 @@ import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
+import requests
+
+import alerts
 
 import requests
 
@@ -160,6 +163,10 @@ def perform_login_request(
     return resp
 
 
+def _send_telegram_alert(token: Optional[str], chat_id: Optional[str], text: str):
+    alerts.send_telegram_alert(token, chat_id, text)
+
+
 def _extract_login_fail_cnt(resp_text: str) -> Optional[str]:
     m = re.search(r'name=["\']LOGIN_FAIL_CNT["\']\s+value=["\']?([^"\'>\s]*)', resp_text, re.IGNORECASE)
     if m:
@@ -262,7 +269,7 @@ def login_with_captcha(
     login_fail_cnt: str = "",
 ) -> Tuple[str, requests.Session, str, bool]:
     """
-    로그인 성공 시까지 캡챠 OCR을 반복합니다. Returns (cookie_string, session, last_response_text, login_ok).
+    캡챠 OCR로 한 번 로그인 시도. Returns (cookie_string, session, last_response_text, login_ok).
     """
     session = _build_session()
     jsessionid = fetch_initial_jsessionid(session, base_url)
@@ -272,49 +279,41 @@ def login_with_captcha(
 
     encoded_pw = encode_password_for_login(password)
     last_resp_text = ""
-    login_ok = False
+    print(f"[login] 캡챠 요청 및 OCR")
+    captcha_text, _ = fetch_captcha_text(session, jsessionid, base_url, use_cache_buster=True)
+    print(f"[login] OCR 추출 캡챠: {captcha_text}")
 
-    attempt = 1
-    while True:
-        print(f"[login] 시도 {attempt} - 캡챠 요청 및 OCR")
-        captcha_text, _ = fetch_captcha_text(session, jsessionid, base_url, use_cache_buster=True)
-        print(f"[login] OCR 추출 캡챠: {captcha_text}")
+    if not captcha_text or len(captcha_text) != 5:
+        print("[login] 캡챠 결과가 5자가 아님.")
+        return _normalize_cookie(jsessionid), session, "", False
 
-        if not captcha_text or len(captcha_text) != 5:
-            print("[login] 캡챠 결과가 5자가 아님. 새 캡챠로 즉시 재시도.")
-            attempt += 1
-            time.sleep(0.3)
-            continue
+    resp = perform_login_request(
+        session,
+        jsessionid,
+        user_id,
+        encoded_pw,
+        captcha_text,
+        base_url,
+        login_fail_cnt=login_fail_cnt,
+    )
+    last_resp_text = resp.text
+    set_cookie_hdr = resp.headers.get("Set-Cookie")
+    latest_jsid = session.cookies.get("JSESSIONID")
+    print(f"[debug] login Set-Cookie 헤더: {set_cookie_hdr}")
+    print(f"[debug] 세션 쿠키 JSESSIONID: {latest_jsid}")
+    if debug_http:
+        _debug_dump_http(resp, label="attempt_1")
 
-        resp = perform_login_request(
-            session,
-            jsessionid,
-            user_id,
-            encoded_pw,
-            captcha_text,
-            base_url,
-            login_fail_cnt=login_fail_cnt,
-        )
-        last_resp_text = resp.text
-        set_cookie_hdr = resp.headers.get("Set-Cookie")
-        latest_jsid = session.cookies.get("JSESSIONID")
-        print(f"[debug] login Set-Cookie 헤더: {set_cookie_hdr}")
-        print(f"[debug] 세션 쿠키 JSESSIONID: {latest_jsid}")
-        if debug_http:
-            _debug_dump_http(resp, label=f"attempt_{attempt}")
-
-        verdict = _decide_login_success(resp)
-        if verdict is True:
-            print("[login] 성공으로 판단")
-            login_ok = True
-            break
-        if verdict is False:
-            print("[login] 실패로 판단. 새로운 캡챠로 즉시 재시도.")
-        else:
-            print("[login] 성공/실패 판단 불가. 즉시 재시도.")
-
-        time.sleep(0.3)
-        attempt += 1
+    verdict = _decide_login_success(resp)
+    if verdict is True:
+        print("[login] 성공으로 판단")
+        login_ok = True
+    elif verdict is False:
+        print("[login] 실패로 판단.")
+        login_ok = False
+    else:
+        print("[login] 성공/실패 판단 불가.")
+        login_ok = False
 
     # 최신 JSESSIONID 다시 확인 (변경될 수 있음)
     jsessionid_latest = session.cookies.get("JSESSIONID") or jsessionid
@@ -398,6 +397,8 @@ def main():
     )
     parser.add_argument("--base-url", dest="base_url", default=BASE_URL, help="기본 요청 대상 URL")
     parser.add_argument("--debug-http", action="store_true", help="로그인 요청/응답 헤더와 응답 텍스트 일부를 출력")
+    parser.add_argument("--tg-token", dest="tg_token", help="Telegram Bot 토큰 (env TELEGRAM_TOKEN로도 지정 가능)")
+    parser.add_argument("--tg-chat-id", dest="tg_chat_id", help="Telegram chat_id (env TELEGRAM_CHAT_ID로도 지정 가능)")
 
     args = parser.parse_args()
 
@@ -419,10 +420,14 @@ def main():
         specs.append(spec)
 
     earliest_exec = min(spec.exec_at for spec in specs)
-    prelogin_start = earliest_exec - timedelta(minutes=15)
+    prelogin_start = earliest_exec - timedelta(minutes=30)
 
     cookie_str = args.cookie
     session = None
+    tg_token = args.tg_token or os.getenv("TELEGRAM_TOKEN")
+    tg_chat_id = args.tg_chat_id or os.getenv("TELEGRAM_CHAT_ID")
+    warned = False
+
     if not cookie_str:
         user_id = args.user_id or input("ID: ").strip()
         password = args.password or getpass.getpass("Password: ")
@@ -432,20 +437,43 @@ def main():
         now = datetime.now()
         if now < prelogin_start:
             wait_sec = (prelogin_start - now).total_seconds()
-            print(f"[login] execAt 15분 전까지 {wait_sec/60:.1f}분 대기 후 로그인 시도 시작")
+            print(f"[login] execAt 30분 전까지 {wait_sec/60:.1f}분 대기 후 로그인 시도 시작")
             time.sleep(wait_sec)
 
-        cookie_str, session, last_resp, login_ok = login_with_captcha(
-            user_id,
-            password,
-            args.base_url,
-            debug_http=args.debug_http,
-            login_fail_cnt=args.login_fail_cnt,
-        )
-        if last_resp and "<html" in last_resp:
-            print("[login][debug] 마지막 응답 본문 첫 400자:\n" + last_resp[:400])
-        if not login_ok:
-            sys.exit("[login] 로그인 성공하지 못했습니다. 종료합니다.")
+        while True:
+            cookie_str, session, last_resp, login_ok = login_with_captcha(
+                user_id,
+                password,
+                args.base_url,
+                debug_http=args.debug_http,
+                login_fail_cnt=args.login_fail_cnt,
+            )
+            if last_resp and "<html" in last_resp:
+                print("[login][debug] 마지막 응답 본문 첫 400자:\n" + last_resp[:400])
+            if login_ok:
+                break
+
+            now = datetime.now()
+            remain = (earliest_exec - now).total_seconds()
+            remain_clamped = max(0, remain)
+            if (remain <= 600) and (not warned):
+                warned = True
+                res_list = []
+                for sp in specs:
+                    mmdd = f"{sp.reserv_date[4:6]}/{sp.reserv_date[6:8]}"
+                    res_list.append(f"{mmdd} {sp.from_time} court {sp.court_no}")
+                msg = "[GMUC] 로그인 실패 경고\n"
+                msg += f"ID: {user_id}\n"
+                msg += f"execAt까지 남은 시간: {remain_clamped/60:.1f}분\n"
+                msg += "예약 목록:\n" + "\n".join(res_list)
+                _send_telegram_alert(tg_token, tg_chat_id, msg)
+
+            if now >= earliest_exec:
+                sys.exit(f"[login] execAt({earliest_exec}) 이후까지 로그인 성공하지 못했습니다. 종료합니다.")
+
+            sleep_sec = max(1.0, min(30.0, remain / 2 if remain > 0 else 1))
+            print(f"[login] 로그인 재시도 대기 {sleep_sec:.0f}초 (execAt까지 {max(remain,0)/60:.1f}분 남음)")
+            time.sleep(sleep_sec)
     else:
         print("[info] 제공된 쿠키를 사용합니다 (로그인 스킵)")
 
@@ -467,13 +495,16 @@ def main():
         )
 
     manager.start()
-    print("[info] 스케줄러 가동. Ctrl+C로 종료할 수 있습니다.")
+    print("[info] 스케줄러 가동 (모든 예약 처리 후 자동 종료).")
 
     try:
-        while True:
-            time.sleep(1)
+        while not manager.is_idle():
+            time.sleep(0.5)
     except KeyboardInterrupt:
-        print("\n[info] 종료 요청을 받았습니다. 백그라운드 스레드는 데몬으로 자동 종료됩니다.")
+        print("\n[info] 종료 요청을 받았습니다. 작업을 중단합니다.")
+    finally:
+        manager.stop()
+    print("[info] 모든 예약 처리가 완료되어 종료합니다.")
 
 
 if __name__ == "__main__":

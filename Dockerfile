@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 ENV TZ=Asia/Seoul
+ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Python 의존성
@@ -17,4 +18,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # 기본 엔트리포인트: cli.py
-ENTRYPOINT ["python", "cli.py"]
+ENTRYPOINT ["python", "-u", "cli.py"]

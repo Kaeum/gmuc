@@ -1,25 +1,25 @@
 DOCKER ?= docker
-IMAGE  ?= gmuc:latest
 
-.PHONY: docker-build docker-run docker-shell docker-install docker-oneclick
+# Usage:
+#   REGION=ap-northeast-2 ACCOUNT_ID=005592596386 make cross-push
+#   IMAGE를 직접 지정하려면: IMAGE=123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/gmuc:tag make cross-push
 
-docker-build:
-	$(DOCKER) build -t $(IMAGE) .
+.PHONY: cross-push ecr-login
 
-# 사용 예:
-# make docker-run ARGS='--id $(ID) --password $(PW) --exec-at "2025-12-27 22:30:00" --reservation "20251231,07:00,09:00,4"'
-docker-run:
-	@if [ -z "$$ARGS" ]; then echo "ARGS 환경변수에 cli.py 인자를 넣어주세요."; exit 1; fi
-	$(DOCKER) run --rm $(IMAGE) $(ARGS)
+IMAGE ?= $(ACCOUNT_ID).dkr.ecr.$(REGION).amazonaws.com/gmuc:latest
 
-# 컨테이너 내부 셸 진입
-docker-shell:
-	$(DOCKER) run --rm -it --entrypoint /bin/bash $(IMAGE)
+cross-push:
+	@if [ -z "$(REGION)" ] || [ -z "$(ACCOUNT_ID)" ]; then \
+		echo "REGION과 ACCOUNT_ID 환경변수를 설정하세요. 예: REGION=ap-northeast-2 ACCOUNT_ID=123456789012 make cross-push"; \
+		exit 1; \
+	fi
+	$(DOCKER) run --privileged --rm tonistiigi/binfmt --install all
+	$(DOCKER) buildx create --use --name gmucbuilder 2>/dev/null || $(DOCKER) buildx use gmucbuilder
+	$(DOCKER) buildx build --platform linux/amd64,linux/arm64 -t "$(IMAGE)" --push .
 
-# Ubuntu/Debian에서 Docker 설치 자동화 (sudo 필요)
-docker-install:
-	scripts/oneclick_docker.sh --install-only
-
-# Docker 설치(필요시) + 빌드만 수행
-docker-oneclick:
-	scripts/oneclick_docker.sh
+ecr-login:
+	@if [ -z "$(REGION)" ] || [ -z "$(ACCOUNT_ID)" ]; then \
+		echo "REGION과 ACCOUNT_ID 환경변수를 설정하세요. 예: REGION=ap-northeast-2 ACCOUNT_ID=123456789012 make ecr-login"; \
+		exit 1; \
+	fi
+	aws ecr get-login-password --region $(REGION) | $(DOCKER) login --username AWS --password-stdin $(ACCOUNT_ID).dkr.ecr.$(REGION).amazonaws.com

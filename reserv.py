@@ -50,7 +50,7 @@ def print_sep():
 
 
 def post_text(s: requests.Session, url: str, data: Dict[str, str]) -> str:
-    r = s.post(url, data=data, timeout=15)
+    r = s.post(url, data=data, timeout=None)
     if not r.encoding:
         r.encoding = "utf-8"
     return r.text
@@ -96,7 +96,6 @@ def run_reservation(
     mchild_cnt: int = 0,
     use_light: str = "N",
     deal_type: str = "CARD",
-    max_retries: int = 5,
 ) -> int:
     """6단계 예약 흐름 수행. 성공 시 0, 실패 시 비0 반환.
 
@@ -112,128 +111,104 @@ def run_reservation(
     base = base.rstrip("/")
     s = build_session(base, cookie, referer=referer, ua=ua)
 
-    max_retries = max(1, min(5, int(max_retries)))
+    print_step(f"== 예약 시도 ==")
+    print_sep()
 
-    last_err_code: str | None = None
+    try:
+        # 1) 날짜 가능 여부 체크
+        print_step("== 1) 날짜 가능 여부 체크 ==")
+        txt = post_text(
+            s,
+            f"{base}/user/tennis/tennisReservDayCheck.do",
+            {"reservDate": reserv_date},
+        )
+        print(txt)
+        print_sep()
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            print_step(f"== 예약 시도 {attempt}/{max_retries} ==")
-            print_sep()
+        # 2) 시간대 선택 검증
+        print_step("== 2) 시간대 선택 검증 ==")
+        if not (time_code and from_time and to_time):
+            print("[WARN] time_code/from_time/to_time 중 일부가 비어 있음")
+        txt = post_text(
+            s,
+            f"{base}/user/tennis/tennisReservNext0Check.do",
+            {
+                "timeCode": time_code or "",
+                "fromTime": from_time or "",
+                "toTime": to_time or "",
+                "menuId": menu_id,
+            },
+        )
+        print(txt)
+        print_sep()
 
-            # 1) 날짜 가능 여부 체크
-            print_step("== 1) 날짜 가능 여부 체크 ==")
-            txt = post_text(
-                s,
-                f"{base}/user/tennis/tennisReservDayCheck.do",
-                {"reservDate": reserv_date},
-            )
-            print(txt)
-            print_sep()
+        # 3) 코트 선택 검증
+        print_step("== 3) 코트 선택 검증 ==")
+        if not (court_code and court_no is not None):
+            print("[WARN] court_code/court_no 중 일부가 비어 있음")
+        txt = post_text(
+            s,
+            f"{base}/user/tennis/tennisReservNext1Check.do",
+            {
+                "courtCode": court_code or "",
+                "courtNo": str(court_no) if court_no is not None else "",
+                "menuId": menu_id,
+            },
+        )
+        print(txt)
+        print_sep()
 
-            # 2) 시간대 선택 검증
-            print_step("== 2) 시간대 선택 검증 ==")
-            if not (time_code and from_time and to_time):
-                print("[WARN] time_code/from_time/to_time 중 일부가 비어 있음")
-            txt = post_text(
-                s,
-                f"{base}/user/tennis/tennisReservNext0Check.do",
-                {
-                    "timeCode": time_code or "",
-                    "fromTime": from_time or "",
-                    "toTime": to_time or "",
-                    "menuId": menu_id,
-                },
-            )
-            print(txt)
-            print_sep()
+        # 4) 이용유형 선택
+        print_step("== 4) 이용유형 선택 ==")
+        txt = post_text(
+            s,
+            f"{base}/user/tennis/tennisReservNext2Check.do",
+            {
+                "useTypeCd": use_type_cd,
+                "useTypeNm": use_type_nm,
+                "menuId": menu_id,
+            },
+        )
+        print(txt)
+        print_sep()
 
-            # 3) 코트 선택 검증
-            print_step("== 3) 코트 선택 검증 ==")
-            if not (court_code and court_no is not None):
-                print("[WARN] court_code/court_no 중 일부가 비어 있음")
-            txt = post_text(
-                s,
-                f"{base}/user/tennis/tennisReservNext1Check.do",
-                {
-                    "courtCode": court_code or "",
-                    "courtNo": str(court_no) if court_no is not None else "",
-                    "menuId": menu_id,
-                },
-            )
-            print(txt)
-            print_sep()
+        # 5) 인원/옵션 입력
+        print_step("== 5) 인원/옵션 입력 ==")
+        txt = post_text(
+            s,
+            f"{base}/user/tennis/tennisReservNext3Check.do",
+            {
+                "adultCnt": str(adult_cnt),
+                "youthCnt": str(youth_cnt),
+                "oldManCnt": str(oldman_cnt),
+                "gCardCnt": str(gcard_cnt),
+                "mChildCnt": str(mchild_cnt),
+                "useLightYn": use_light,
+                "menuId": menu_id,
+            },
+        )
+        print(txt)
+        print_sep()
 
-            # 4) 이용유형 선택
-            print_step("== 4) 이용유형 선택 ==")
-            txt = post_text(
-                s,
-                f"{base}/user/tennis/tennisReservNext2Check.do",
-                {
-                    "useTypeCd": use_type_cd,
-                    "useTypeNm": use_type_nm,
-                    "menuId": menu_id,
-                },
-            )
-            print(txt)
-            print_sep()
+        # 6) 결제수단 결정
+        print_step(f"== 6) 결제수단 -> ({deal_type}) ==")
+        txt6 = post_text(
+            s,
+            f"{base}/user/tennis/tennisReservNext4Check.do",
+            {"deal_type": deal_type, "menuId": menu_id},
+        )
+        print(txt6)
+        print_sep()
 
-            # 5) 인원/옵션 입력
-            print_step("== 5) 인원/옵션 입력 ==")
-            txt = post_text(
-                s,
-                f"{base}/user/tennis/tennisReservNext3Check.do",
-                {
-                    "adultCnt": str(adult_cnt),
-                    "youthCnt": str(youth_cnt),
-                    "oldManCnt": str(oldman_cnt),
-                    "gCardCnt": str(gcard_cnt),
-                    "mChildCnt": str(mchild_cnt),
-                    "useLightYn": use_light,
-                    "menuId": menu_id,
-                },
-            )
-            print(txt)
-            print_sep()
+        ok, err = _is_success_from_step6(txt6)
+        if ok:
+            print("완료. 각 단계 응답을 확인해 주세요.")
+            return 0
+        else:
+            msg_err = f"errCode={err}" if err is not None else "응답 파싱 실패"
+            print(f"[FAIL] 최종 단계 실패 ({msg_err}).")
+            return 1
 
-            # 6) 결제수단 결정
-            print_step(f"== 6) 결제수단 -> ({deal_type}) ==")
-            txt6 = post_text(
-                s,
-                f"{base}/user/tennis/tennisReservNext4Check.do",
-                {"deal_type": deal_type, "menuId": menu_id},
-            )
-            print(txt6)
-            print_sep()
-
-            ok, err = _is_success_from_step6(txt6)
-            last_err_code = err
-            if ok:
-                print("완료. 각 단계 응답을 확인해 주세요.")
-                return 0
-
-            # 실패 시 재시도 안내
-            if attempt < max_retries:
-                msg_err = f"errCode={err}" if err is not None else "응답 파싱 실패"
-                print(f"[INFO] 최종 단계 실패({msg_err}). 재시도합니다... ({attempt}/{max_retries})")
-                print_sep()
-                continue
-            else:
-                break
-
-        except requests.RequestException as e:
-            # 네트워크/HTTP 오류는 재시도
-            if attempt < max_retries:
-                print(f"[WARN] 요청 중 오류: {e}. 재시도합니다... ({attempt}/{max_retries})")
-                print_sep()
-                continue
-            else:
-                print(f"[ERROR] 요청 중 오류: {e}")
-                break
-
-    # 모든 재시도 실패
-    if last_err_code is not None:
-        print(f"[FAIL] 모든 시도 실패 (최종 errCode={last_err_code}).")
-    else:
-        print("[FAIL] 모든 시도 실패 (성공 응답을 확인하지 못함).")
-    return 1
+    except requests.RequestException as e:
+        print(f"[ERROR] 요청 중 오류: {e}")
+        return 1

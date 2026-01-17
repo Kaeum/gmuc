@@ -179,6 +179,7 @@ class ReservationManager:
         self._worker: Optional[threading.Thread] = None
         self._log_cb = log_callback or (lambda msg: None)
         self._exec_queue: "queue.Queue[Reservation]" = queue.Queue()
+        self._active_job = False
 
     # ----- API -----
     def set_cookie(self, cookie: str):
@@ -216,6 +217,19 @@ class ReservationManager:
         self._worker = threading.Thread(target=self._run_loop, daemon=True)
         self._worker.start()
         self._log("스케줄러 시작")
+
+    def stop(self):
+        """스케줄러 루프를 종료"""
+        self._running = False
+        if self._worker and self._worker.is_alive():
+            self._worker.join(timeout=2)
+
+    def is_idle(self) -> bool:
+        """예약/큐/실행 중 작업이 모두 없는지 확인"""
+        with self._lock:
+            pending = len(self._reservations)
+        queue_empty = self._exec_queue.empty()
+        return (pending == 0) and queue_empty and (not self._active_job)
 
     def cancel_reservation(self, reservation_id: int) -> bool:
         """예약 취소: 대기 목록 및 실행 큐에서 제거 시도.
@@ -280,10 +294,12 @@ class ReservationManager:
                 time.sleep(0.3)
                 continue
             try:
+                self._active_job = True
                 self._execute(job)
             except Exception as e:
                 self._log(f"[ERROR] 실행 실패 id={job.id}: {e}")
             finally:
+                self._active_job = False
                 self._exec_queue.task_done()
 
     def _execute(self, r: Reservation):
