@@ -325,7 +325,8 @@ def main():
     secret = APP_SECRET
 
     current_period = datetime.now().strftime("%Y%m")
-    expected = hmac.new(secret.encode("utf-8"), current_period.encode("utf-8"), hashlib.sha256).hexdigest()
+    full_hash = hmac.new(secret.encode("utf-8"), current_period.encode("utf-8"), hashlib.sha256).hexdigest()
+    expected = full_hash[:6]  # 앞 6글자만 사용
 
     ok = False
     for _ in range(3):
