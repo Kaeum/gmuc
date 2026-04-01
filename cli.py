@@ -227,39 +227,7 @@ def _debug_dump_http(resp: requests.Response, label: str = "login"):
     except Exception:
         req = None
 
-    print(f"[debug] ===== {label} request =====")
-    if req:
-        print(f"[debug] {req.method} {req.url}")
-        for k, v in req.headers.items():
-            print(f"[debug] req.hdr {k}: {v}")
-        body = req.body
-        if body:
-            try:
-                body_str = body.decode() if isinstance(body, (bytes, bytearray)) else str(body)
-                parsed = urllib.parse.parse_qsl(body_str, keep_blank_values=True)
-                for k, v in parsed:
-                    if k.lower() == "txtpass":
-                        v_disp = _mask_secret(v)
-                    else:
-                        v_disp = v
-                    print(f"[debug] req.body {k}: {v_disp}")
-            except Exception as e:
-                print(f"[debug] req.body raw (decode error {e}): {body!r}")
-    else:
-        print("[debug] (no request object)")
-
-    print(f"[debug] ===== {label} response =====")
-    print(f"[debug] status: {resp.status_code}")
-    print(f"[debug] resp.hdr Location: {resp.headers.get('Location')}")
-    print(f"[debug] resp.hdr Set-Cookie: {resp.headers.get('Set-Cookie')}")
-    fail_cnt = _extract_login_fail_cnt(resp.text or "")
-    if fail_cnt is not None:
-        print(f"[debug] parsed LOGIN_FAIL_CNT from body: '{fail_cnt}'")
-    alerts = _extract_alert_messages(resp.text or "")
-    if alerts:
-        print(f"[debug] found alert messages: {alerts}")
-    snippet = (resp.text or "")[:600]
-    print(f"[debug] resp.text (first 600 chars):\n{snippet}")
+    pass
 
 
 def login_with_captcha(
@@ -282,7 +250,7 @@ def login_with_captcha(
     last_resp_text = ""
     print(f"[login] 캡챠 요청 및 OCR")
     captcha_text, _ = fetch_captcha_text(session, jsessionid, base_url, use_cache_buster=True)
-    print(f"[login] OCR 추출 캡챠: {captcha_text}")
+    print(f"[login] 캡챠 OCR 완료 (len={len(captcha_text) if captcha_text else 0})")
 
     if not captcha_text or len(captcha_text) != 5:
         print("[login] 캡챠 결과가 5자가 아님.")
@@ -300,8 +268,6 @@ def login_with_captcha(
     last_resp_text = resp.text
     set_cookie_hdr = resp.headers.get("Set-Cookie")
     latest_jsid = session.cookies.get("JSESSIONID")
-    print(f"[debug] login Set-Cookie 헤더: {set_cookie_hdr}")
-    print(f"[debug] 세션 쿠키 JSESSIONID: {latest_jsid}")
     if debug_http:
         _debug_dump_http(resp, label="attempt_1")
 
@@ -319,7 +285,7 @@ def login_with_captcha(
     # 최신 JSESSIONID 다시 확인 (변경될 수 있음)
     jsessionid_latest = session.cookies.get("JSESSIONID") or jsessionid
     cookie_str = _normalize_cookie(jsessionid_latest)
-    print(f"[login] 최종 쿠키: {cookie_str}")
+    print(f"[login] 쿠키 갱신 완료")
     if not login_ok:
         print("[login][warn] 로그인에 성공하지 못했습니다. 응답을 참고하세요.")
     return cookie_str, session, last_resp_text, login_ok
@@ -449,8 +415,6 @@ def main():
                 debug_http=args.debug_http,
                 login_fail_cnt=args.login_fail_cnt,
             )
-            if last_resp and "<html" in last_resp:
-                print("[login][debug] 마지막 응답 본문 첫 400자:\n" + last_resp[:400])
             if login_ok:
                 break
 
@@ -505,6 +469,15 @@ def main():
         print("\n[info] 종료 요청을 받았습니다. 작업을 중단합니다.")
     finally:
         manager.stop()
+    results = manager.get_results()
+    if results:
+        lines = []
+        for r, rc, _ in results:
+            status = "✅ 성공" if rc == 0 else "❌ 실패"
+            lines.append(f"{status} | {r.reservDate} {r.fromTime}-{r.toTime} 코트{r.courtNo}")
+        msg = f"📋 예약 결과 (ID: {user_id})\n" + "\n".join(lines)
+        _send_telegram_alert(tg_token, tg_chat_id, msg)
+
     print("[info] 모든 예약 처리가 완료되어 종료합니다.")
 
 
