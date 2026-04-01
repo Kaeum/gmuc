@@ -5,3 +5,6 @@ GMUC.spec
 .idea
 .DS_Store
 *.code-workspace
+__pycache__/
+user.json
+schedule.json
