@@ -49,8 +49,8 @@ def print_sep():
     print("\n----------------------------------------\n")
 
 
-def post_text(s: requests.Session, url: str, data: Dict[str, str]) -> str:
-    r = s.post(url, data=data, timeout=None)
+def post_text(s: requests.Session, url: str, data: Dict[str, str], timeout: float = 120) -> str:
+    r = s.post(url, data=data, timeout=timeout)
     if not r.encoding:
         r.encoding = "utf-8"
     return r.text
@@ -122,7 +122,6 @@ def run_reservation(
             f"{base}/user/tennis/tennisReservDayCheck.do",
             {"reservDate": reserv_date},
         )
-        print(txt)
         print_sep()
 
         # 2) 시간대 선택 검증
@@ -139,7 +138,6 @@ def run_reservation(
                 "menuId": menu_id,
             },
         )
-        print(txt)
         print_sep()
 
         # 3) 코트 선택 검증
@@ -155,7 +153,6 @@ def run_reservation(
                 "menuId": menu_id,
             },
         )
-        print(txt)
         print_sep()
 
         # 4) 이용유형 선택
@@ -169,7 +166,6 @@ def run_reservation(
                 "menuId": menu_id,
             },
         )
-        print(txt)
         print_sep()
 
         # 5) 인원/옵션 입력
@@ -187,7 +183,6 @@ def run_reservation(
                 "menuId": menu_id,
             },
         )
-        print(txt)
         print_sep()
 
         # 6) 결제수단 결정
@@ -197,7 +192,6 @@ def run_reservation(
             f"{base}/user/tennis/tennisReservNext4Check.do",
             {"deal_type": deal_type, "menuId": menu_id},
         )
-        print(txt6)
         print_sep()
 
         ok, err = _is_success_from_step6(txt6)

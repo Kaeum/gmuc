@@ -18,6 +18,7 @@ import queue
 import threading
 import io
 import contextlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -180,6 +181,7 @@ class ReservationManager:
         self._log_cb = log_callback or (lambda msg: None)
         self._exec_queue: "queue.Queue[Reservation]" = queue.Queue()
         self._active_job = False
+        self._results: List[tuple[Reservation, int, str]] = []
 
     # ----- API -----
     def set_cookie(self, cookie: str):
@@ -230,6 +232,11 @@ class ReservationManager:
             pending = len(self._reservations)
         queue_empty = self._exec_queue.empty()
         return (pending == 0) and queue_empty and (not self._active_job)
+
+    def get_results(self) -> List[tuple["Reservation", int, str]]:
+        """실행 완료된 예약들의 (Reservation, rc, output) 목록 반환"""
+        with self._lock:
+            return list(self._results)
 
     def cancel_reservation(self, reservation_id: int) -> bool:
         """예약 취소: 대기 목록 및 실행 큐에서 제거 시도.
@@ -287,20 +294,30 @@ class ReservationManager:
                 self._log(f"실행 대기열 추가: id={r.id} @ {r.exec_at} "
                           f"({r.reservDate} {r.fromTime}-{r.toTime} court {r.courtNo})")
 
-            # 큐 처리(순차)
-            try:
-                job = self._exec_queue.get(timeout=0.5)
-            except queue.Empty:
+            # 큐 처리(병렬)
+            jobs: List[Reservation] = []
+            while True:
+                try:
+                    jobs.append(self._exec_queue.get_nowait())
+                except queue.Empty:
+                    break
+
+            if not jobs:
                 time.sleep(0.3)
                 continue
-            try:
-                self._active_job = True
-                self._execute(job)
-            except Exception as e:
-                self._log(f"[ERROR] 실행 실패 id={job.id}: {e}")
-            finally:
-                self._active_job = False
+
+            self._active_job = True
+            with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+                futures = {pool.submit(self._execute, r): r for r in jobs}
+                for f in as_completed(futures):
+                    r = futures[f]
+                    try:
+                        f.result()
+                    except Exception as e:
+                        self._log(f"[ERROR] 실행 실패 id={r.id}: {e}")
+            for _ in jobs:
                 self._exec_queue.task_done()
+            self._active_job = False
 
     def _execute(self, r: Reservation):
         self._log(
@@ -310,6 +327,8 @@ class ReservationManager:
 
         # Reservation의 값을 명시적 인자로 전달하여 실행
         rc, out = self._run_script_with_args(r)
+        with self._lock:
+            self._results.append((r, rc, out))
         if rc == 0:
             self._log(f"실행 완료(id={r.id})\n{out.strip()}")
         else:
