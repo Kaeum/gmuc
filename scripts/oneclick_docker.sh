@@ -40,7 +40,7 @@ ensure_docker() {
 build_image() {
   local image=${1:-gmuc:latest}
   echo "[build] Building image ${image}"
-  docker build -t "${image}" .
+  docker build --platform linux/amd64 -t "${image}" .
 }
 
 main() {

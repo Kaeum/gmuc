@@ -212,7 +212,7 @@ def generate_default_reservations(today: date) -> List[Reservation]:
             continue
         slots = month_slots(dt.month)
         for start, end in slots:
-            for court in (2, 3):
+            for court in (1, 2):
                 targets.append(
                     Reservation(
                         reserv_date=dt.strftime("%Y%m%d"),

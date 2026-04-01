@@ -2,6 +2,13 @@
 
 GMUC는 광명도시공사(GMUC) 테니스 코트를 예약하기 위한 자동화 도구입니다.
 
+## 프로그램 수정 후 루틴
+
+1. oneclick_docker.sh로 이미지 말기
+2. push_to_ecr.sh로 이미지 ecr에 올리기
+3. 2의 이미지로 ecr에서 새 개정 만들기
+4. 3의 개정을TASK_DEF로 setup_lambda_scheduler.sh 실행하되, 를 새 개정으로 변경하기
+
 ## 실행 모드
 
 ### 1. GUI 모드 (로컬)
@@ -179,6 +186,13 @@ aws ssm put-parameter \
     {"id": "user2", "password": "pass2"}
   ]' \
   --region ap-northeast-2
+  
+aws ssm put-parameter \                                                                                                                                                            
+    --name '/gmuc/users' \                                                                             
+    --type SecureString \                                                                                                                                                            
+    --value "file://user.json" \                                                                                                                                                     
+    --overwrite \        
+    --region ap-northeast-2
 ```
 
 #### 스케줄 오버라이드 (선택사항)
@@ -196,6 +210,13 @@ aws ssm put-parameter \
     ]
   }' \
   --region ap-northeast-2
+  
+aws ssm put-parameter \                   
+    --name '/gmuc/schedule' \            
+    --type String \
+    --value "file://schedule.json" \                                                                                                                                                 
+    --overwrite \
+    --region ap-northeast-2  
 ```
 
 ### 3. Lambda 환경변수
