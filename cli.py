@@ -394,9 +394,11 @@ def main():
     tg_token = args.tg_token or os.getenv("TELEGRAM_TOKEN")
     tg_chat_id = args.tg_chat_id or os.getenv("TELEGRAM_CHAT_ID")
     warned = False
+    user_label = args.user_id or "<provided-cookie>"
 
     if not cookie_str:
         user_id = args.user_id or input("ID: ").strip()
+        user_label = user_id
         password = args.password or getpass.getpass("Password: ")
         if not user_id or not password:
             sys.exit("ID와 Password가 모두 필요합니다.")
@@ -445,19 +447,43 @@ def main():
     manager = scheduler.ReservationManager(log_callback=lambda msg: print(f"[scheduler] {msg}"))
     manager.set_cookie(cookie_str)
 
+    enqueue_failures: List[tuple[ReservationSpec, str]] = []
+    enqueued = 0
     for spec in specs:
-        r = manager.create_reservation(
-            reservDate=spec.reserv_date,
-            fromTime=spec.from_time,
-            toTime=spec.to_time,
-            courtNo=spec.court_no,
-            exec_at=spec.exec_at,
-            timeBaseOverride=spec.time_base,
-        )
+        try:
+            r = manager.create_reservation(
+                reservDate=spec.reserv_date,
+                fromTime=spec.from_time,
+                toTime=spec.to_time,
+                courtNo=spec.court_no,
+                exec_at=spec.exec_at,
+                timeBaseOverride=spec.time_base,
+            )
+        except Exception as e:
+            enqueue_failures.append((spec, str(e)))
+            print(
+                f"[enqueue][error] {spec.reserv_date} {spec.from_time}-{spec.to_time} "
+                f"court {spec.court_no} 예약 생성 실패: {e}"
+            )
+            continue
+        enqueued += 1
         print(
             f"[enqueue] id={r.id} {r.reservDate} {r.fromTime}-{r.toTime} "
             f"court {r.courtNo} timeCode={r.timeCode} base={r.timeBase}"
         )
+
+    if enqueue_failures:
+        print(f"[enqueue][warn] 예약 생성 실패 {len(enqueue_failures)}건, 성공 {enqueued}건")
+
+    if enqueued == 0:
+        if tg_token and tg_chat_id:
+            lines = [
+                f"❌ 생성 실패 | {spec.reserv_date} {spec.from_time}-{spec.to_time} 코트{spec.court_no}"
+                for spec, _ in enqueue_failures
+            ]
+            msg = f"📋 예약 결과 (ID: {user_label})\n" + "\n".join(lines)
+            _send_telegram_alert(tg_token, tg_chat_id, msg)
+        sys.exit("[error] 예약 생성에 모두 실패했습니다. 스케줄러를 시작하지 않습니다.")
 
     manager.start()
     print("[info] 스케줄러 가동 (모든 예약 처리 후 자동 종료).")
@@ -470,12 +496,14 @@ def main():
     finally:
         manager.stop()
     results = manager.get_results()
-    if results:
+    if results or enqueue_failures:
         lines = []
         for r, rc, _ in results:
             status = "✅ 성공" if rc == 0 else "❌ 실패"
             lines.append(f"{status} | {r.reservDate} {r.fromTime}-{r.toTime} 코트{r.courtNo}")
-        msg = f"📋 예약 결과 (ID: {user_id})\n" + "\n".join(lines)
+        for spec, _ in enqueue_failures:
+            lines.append(f"❌ 생성 실패 | {spec.reserv_date} {spec.from_time}-{spec.to_time} 코트{spec.court_no}")
+        msg = f"📋 예약 결과 (ID: {user_label})\n" + "\n".join(lines)
         _send_telegram_alert(tg_token, tg_chat_id, msg)
 
     print("[info] 모든 예약 처리가 완료되어 종료합니다.")

@@ -18,7 +18,6 @@ import queue
 import threading
 import io
 import contextlib
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -38,11 +37,28 @@ TIME_CODE_VALUE_PATTERN = re.compile(
 )
 
 
-def _extract_time_code_from_response(html: str) -> str:
+def _extract_time_info_payload(html: str) -> Optional[str]:
     match = TIME_INFO_PATTERN.search(html)
     if not match:
+        return None
+    return match.group(2).strip()
+
+
+def _debug_preview(text: Optional[str], limit: int = 400) -> str:
+    if text is None:
+        return "<not found>"
+    compact = re.sub(r"\s+", " ", text).strip()
+    if compact == "":
+        return "<empty>"
+    if len(compact) > limit:
+        return compact[:limit] + "...<truncated>"
+    return compact
+
+
+def _extract_time_code_from_response(html: str) -> str:
+    payload = _extract_time_info_payload(html)
+    if payload is None:
         raise ValueError("timeCurrentInfo 구문을 찾을 수 없습니다.")
-    payload = match.group(2).strip()
     if not payload:
         raise ValueError("timeCurrentInfo 데이터가 비어 있습니다.")
     try:
@@ -79,7 +95,15 @@ def fetch_time_base_from_server(reserv_date: str, cookie: str, base_url: Optiona
         f"{base}/user/tennis/tennisReservDayCheck.do",
         {"reservDate": reserv_date},
     )
-    time_code = _extract_time_code_from_response(html)
+    try:
+        time_code = _extract_time_code_from_response(html)
+    except ValueError as e:
+        payload_preview = _debug_preview(_extract_time_info_payload(html))
+        html_preview = _debug_preview(html, limit=600)
+        raise ValueError(
+            f"{e} [reservDate={reserv_date}, timeCurrentInfo={payload_preview}, "
+            f"html_len={len(html)}, html_preview={html_preview}]"
+        ) from e
     m = re.search(r"(\d+)$", time_code)
     if not m:
         raise ValueError(f"TIME_CODE 형식이 올바르지 않습니다: {time_code}")
@@ -294,30 +318,21 @@ class ReservationManager:
                 self._log(f"실행 대기열 추가: id={r.id} @ {r.exec_at} "
                           f"({r.reservDate} {r.fromTime}-{r.toTime} court {r.courtNo})")
 
-            # 큐 처리(병렬)
-            jobs: List[Reservation] = []
-            while True:
-                try:
-                    jobs.append(self._exec_queue.get_nowait())
-                except queue.Empty:
-                    break
-
-            if not jobs:
+            # 큐 처리(순차: 동일 세션 상태 충돌 방지)
+            try:
+                job = self._exec_queue.get(timeout=0.5)
+            except queue.Empty:
                 time.sleep(0.3)
                 continue
 
-            self._active_job = True
-            with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
-                futures = {pool.submit(self._execute, r): r for r in jobs}
-                for f in as_completed(futures):
-                    r = futures[f]
-                    try:
-                        f.result()
-                    except Exception as e:
-                        self._log(f"[ERROR] 실행 실패 id={r.id}: {e}")
-            for _ in jobs:
+            try:
+                self._active_job = True
+                self._execute(job)
+            except Exception as e:
+                self._log(f"[ERROR] 실행 실패 id={job.id}: {e}")
+            finally:
+                self._active_job = False
                 self._exec_queue.task_done()
-            self._active_job = False
 
     def _execute(self, r: Reservation):
         self._log(
