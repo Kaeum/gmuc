@@ -376,7 +376,12 @@ def run_ecs_task(user: User, assigned: List[Reservation], exec_at: str, aws_cfg:
 
 
 def compute_exec_at(now_kst: datetime) -> str:
-    exec_dt = datetime.combine(now_kst.date(), time(9, 59, 1), tzinfo=KST) if KST else datetime.combine(now_kst.date(), time(9, 59, 57))
+    run_date = now_kst.date()
+    next_day = run_date + timedelta(days=1)
+    exec_time = time(10, 0, 0) if run_date.day == 15 else time(9, 59, 1)
+    if next_day.month != run_date.month:
+        exec_time = time(9, 59, 1)
+    exec_dt = datetime.combine(run_date, exec_time, tzinfo=KST) if KST else datetime.combine(run_date, exec_time)
     return exec_dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
