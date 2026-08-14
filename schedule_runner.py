@@ -172,7 +172,7 @@ def is_weekend(dt: date) -> bool:
 def month_slots(month: int) -> List[tuple[str, str]]:
     if month in WINTER_MONTHS:
         return [("07:00", "09:00"), ("09:00", "11:00")]
-    return [("06:00", "08:00"), ("08:00", "10:00"), ("10:00", "12:00")]
+    return [("06:00", "08:00"), ("08:00", "10:00")]
 
 
 def iter_dates(start: date, end: date) -> Iterable[date]:
@@ -376,7 +376,7 @@ def run_ecs_task(user: User, assigned: List[Reservation], exec_at: str, aws_cfg:
 
 
 def compute_exec_at(now_kst: datetime) -> str:
-    exec_dt = datetime.combine(now_kst.date(), time(9, 59, 57), tzinfo=KST) if KST else datetime.combine(now_kst.date(), time(9, 59, 57))
+    exec_dt = datetime.combine(now_kst.date(), time(9, 59, 1), tzinfo=KST) if KST else datetime.combine(now_kst.date(), time(9, 59, 57))
     return exec_dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
